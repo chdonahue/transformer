@@ -153,7 +153,7 @@ class Encoder(torch.nn.Module):
     """ 
     This is the full group of Nx encoder blocks.
     """
-    def __init__(self, layers: torch.ModuleList) -> None:
+    def __init__(self, layers: torch.nn.ModuleList) -> None:
         super().__init__()
         self.layers = layers
         self.norm = LayerNormalization()
