@@ -1,0 +1,3 @@
+# Building a transformer from scratch
+
+This is a repo to learn how to build a transformer from scratch. Planning to build out further infrastructure afterwards...
