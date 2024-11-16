@@ -141,7 +141,7 @@ class EncoderBlock(torch.nn.Module):
         super().__init__()
         self.self_attention_block = self_attention_block
         self.feed_forward_block = feed_forward_block
-        self.residual_connections = torch.ModuleList([ResidualConnection(dropout) for _ in range(2)])
+        self.residual_connections = torch.nn.ModuleList([ResidualConnection(dropout) for _ in range(2)])
 
     def forward(self, x, src_mask):
         x = self.residual_connections[0](x, lambda x: self.self_attention_block(x, x, x, src_mask)) # calling forward function of multihead attention block
@@ -164,6 +164,129 @@ class Encoder(torch.nn.Module):
         return self.norm(x)
         
 
+
+# Decoder block:
+class DecoderBlock(torch.nn.Module):
+    def __init__(self, self_attention_block: MultiHeadAttentionBlock, cross_attention_block: MultiHeadAttentionBlock, feed_forward_block: FeedForwardBlock, dropout: float)-> None:
+        super().__init__()
+        self.self_attention_block = self_attention_block
+        self.cross_attention_block = cross_attention_block
+        self.feed_forward_block = feed_forward_block
+        self.residual_connections = torch.nn.ModuleList([ResidualConnection(dropout) for _ in range(3)]) # 3 residual connections
+        self.dropout = dropout
+
+    def forward(self, x, encoder_output, src_mask, tgt_mask):
+        """ 
+        Soruce and target masks (i.e. encoder (english) to decoder (spanish))
+        """
+        x = self.residual_connections[0](x, lambda x: self.self_attention_block(x, x, x, tgt_mask))
+        x = self.residual_connections[1](x, lambda x: self.cross_attention_block(x, encoder_output, encoder_output, src_mask))
+        x = self.residual_connections[2](x, self.feed_forward_block)
+        return x
+
+class Decoder(torch.nn.Module):
+    def __init__(self, layers: torch.nn.ModuleList):
+        super().__init__()
+        self.layers = layers
+        self.norm = LayerNormalization()
+
+    def forward(self, x, encoder_output, src_mask, tgt_mask):
+        for layer in self.layers:
+            x = layer(x, encoder_output, src_mask, tgt_mask)
+        return self.norm(x)
+    
+class ProjectionLayer(torch.nn.Module):
+    def __init__(self, d_model: int, vocab_size: int) -> None:
+        super().__init__()
+        self.proj = torch.nn.Linear(d_model, vocab_size)
+
+    def forward(self, x):
+        # (batch, seq_len, d_model) -> (batch, seq_len, vocab_size)
+        return torch.log_softmax(self.proj(x), dim = -1)
+    
+class Transformer(torch.nn.Module):
+    def __init__(self, encoder: Encoder, 
+                 decoder: Decoder, 
+                 src_embed: InputEmbeddings, 
+                 tgt_embed: InputEmbeddings, 
+                 src_pos: PositionalEncoding, 
+                 tgt_pos: PositionalEncoding, 
+                 projection_layer: ProjectionLayer) -> None:
+        super().__init__()
+        self.encoder = encoder
+        self.decoder = decoder
+        self.src_embed = src_embed
+        self.tgt_embed = tgt_embed
+        self.src_pos = src_pos
+        self.tgt_pos = tgt_pos
+        self.projection_layer = projection_layer
+
+    def encode(self, src, src_mask):
+        src = self.src_embed(src)
+        src = self.src_pos(src)
+        return self.encoder(src, src_mask)
+    
+    def decode(self, encoder_output, src_mask, tgt, tgt_mask):
+        tgt = self.tgt_embed(tgt)
+        tgt = self.tgt_pos(tgt)
+        return self.decoder(tgt, encoder_output, src_mask, tgt_mask)
+    
+    def project(self, x):
+        return self.projection_layer(x)
+    
+def build_transformer(src_vocab_size: int, 
+                      tgt_vocab_size: int, 
+                      src_seq_len: int, 
+                      tgt_seq_len: int, 
+                      d_model: int = 512, 
+                      N: int = 6, 
+                      h: int = 8, 
+                      dropout: float = 0.1, 
+                      d_ff: int = 2048) -> Transformer:
+    """ 
+    N: number block repetitions
+    h: number attention heads
+    d_ff: hidden layer of feedforward
+    """
+    src_embed = InputEmbeddings(d_model, src_vocab_size)
+    tgt_embed = InputEmbeddings(d_model, tgt_vocab_size)
+
+    # Positional encoding layers:
+    src_pos = PositionalEncoding(d_model, src_seq_len, dropout)
+    tgt_pos = PositionalEncoding(d_model, tgt_seq_len, dropout)
+
+    # Encoder block:
+    encoder_blocks = []
+    for _ in range(N):
+        encoder_self_attention_block = MultiHeadAttentionBlock(d_model, h, dropout)
+        feed_forward_block = FeedForwardBlock(d_model, d_ff, dropout)
+        encoder_block = EncoderBlock(encoder_self_attention_block, feed_forward_block, dropout)
+        encoder_blocks.append(encoder_block)
+
+    # Decoder blocks:
+    decoder_blocks = []
+    for _ in range(N):
+        decoder_self_attention_block = MultiHeadAttentionBlock(d_model, h, dropout)
+        decoder_cross_attention_block = MultiHeadAttentionBlock(d_model, h, dropout)
+        feed_forward_block = FeedForwardBlock(d_model, d_ff, dropout)
+        decoder_block = DecoderBlock(decoder_self_attention_block, decoder_cross_attention_block, feed_forward_block, dropout)
+        decoder_blocks.append(decoder_block)
+
+    # Create the encoder and decoder:
+    encoder = Encoder(torch.nn.ModuleList(encoder_blocks))
+    decoder = Decoder(torch.nn.ModuleList(decoder_blocks))
+
+    # Create projection layer:
+    projection_layer = ProjectionLayer(d_model, tgt_vocab_size)
+
+    # Create transformer
+    transformer = Transformer(encoder, decoder, src_embed, tgt_embed, src_pos, tgt_pos, projection_layer)
+
+    # Initialize the params:
+    for p in transformer.parameters():
+        if p.dim() > 1:
+            torch.nn.init.xavier_uniform_(p) # for some reason this is more efficient than randomization
+    return transformer
 
 
 
