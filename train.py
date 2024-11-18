@@ -1,24 +1,43 @@
 import torch
+import os
+import wandb
 from torch.utils.data import Dataset, DataLoader, random_split
 from datasets import load_dataset
 from dataset import BilingualDataset, causal_mask
 from model import build_transformer
+from dotenv import load_dotenv
+from omegaconf import OmegaConf
+
 
 from config import get_weights_file_path, get_config
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.trainers import WordLevelTrainer
 from tokenizers.pre_tokenizers import Whitespace
-from torch.utils.tensorboard import SummaryWriter
+# from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from pathlib import Path
 import warnings
+
+def setup_wandb(config: dict):
+    """Initialize WandB with configuration."""
+    # Load environment variables from .env file
+    load_dotenv()
+
+    wandb.login(key=os.getenv('WANDB_API_KEY'))
+    # Start a new wandb run:
+    return wandb.init(
+        project=config.wandb.project_name,
+        name = config.wandb.run_name,
+        config=OmegaConf.to_container(config.model),
+        tags = config.wandb.tags,
+    )
 
 def beam_search_decode():
     """
     Not yet implemented
     """
-    pass
+    raise ValueError("Not Yet Implemented")
 
 def greedy_decode(model, source, source_mask, tokenizer_src, tokenizer_tgt, max_len, device):
     sos_idx = tokenizer_tgt.token_to_id('[SOS]')
@@ -156,8 +175,8 @@ def train_model(config):
     train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt = get_ds(config)
     model = get_model(config, tokenizer_src.get_vocab_size(), tokenizer_tgt.get_vocab_size()).to(device)
 
-    # Tensorboard (let's do W&B later)
-    writer = SummaryWriter(config['experiment_name'])
+    # Tensorboard (probably depricate in favor of W&B)
+    # writer = SummaryWriter(config['experiment_name'])
 
     optimizer = torch.optim.Adam(model.parameters(), lr=config['lr'], eps=1e-9)
 
@@ -195,8 +214,8 @@ def train_model(config):
             batch_iterator.set_postfix({f"loss": f"{loss.item():6.3f}"})
 
             # Log the loss:
-            writer.add_scalar('train loss', loss.item(), global_step)
-            writer.flush()
+            # writer.add_scalar('train loss', loss.item(), global_step)
+            # writer.flush()
 
             # Backprop:
             loss.backward()
@@ -223,5 +242,13 @@ def train_model(config):
 
 if __name__ == '__main__':
     warnings.filterwarnings('ignore')
-    config = get_config()
-    train_model(config)
+
+    # Load config:
+    config = OmegaConf.load('test_config.yaml')
+    # config = get_config() # old way
+
+    # Initialize wandb using OmegaConf:
+    run = setup_wandb(config) 
+
+    # Train model:
+    train_model(config.model)
