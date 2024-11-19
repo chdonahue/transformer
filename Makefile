@@ -11,12 +11,21 @@ CONDA_ACTIVATE=source $$(conda info --base)/etc/profile.d/conda.sh ; conda activ
 
 CONDA_ENV=transformer_env
 
-all: conda-env-update pip-compile pip-sync
+all: conda-env-update pip-compile pip-sync set-pre-commit
 
 # Create or update conda env
 conda-env-update:
 	conda env update --prune
 
+# Install and setup pre-commit hooks
+.PHONY: setup-pre-commit
+setup-pre-commit:
+	$(CONDA_ACTIVATE) $(CONDA_ENV)
+	pip install pre-commit
+	pre-commit install
+
+
+	
 # # Compile exact pip packages
 # pip-compile:
 # 	$(CONDA_ACTIVATE) $(CONDA_ENV)
