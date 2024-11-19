@@ -1,0 +1,17 @@
+name: transformer_env
+channels: 
+  - defaults
+dependencies:
+  - python=3.9
+  - pip
+  - pip:
+    - pip-tools
+    - torch
+    - datasets
+    - numpy<2.0.0
+    - python-dotenv
+    - wandb
+    - omegaconf
+    - tokenizers
+
+
