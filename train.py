@@ -90,9 +90,12 @@ def run_validation(
     device,
     print_msg,
     global_step,
+    loss_fn,
     num_examples=2,
 ):
     model.eval()  # model in evaluation mode
+    total_val_loss = 0.0
+    val_batches = 0
     count = 0
 
     source_texts = []
@@ -136,8 +139,27 @@ def run_validation(
             if count == num_examples:
                 break
 
-    # if writer:
-    # Torch metrics Char error rate, etc. , BLEU, WER
+            # Calculate validation loss
+            encoder_input = batch["encoder_input"].to(device)
+            decoder_input = batch["decoder_input"].to(device)
+            encoder_mask = batch["encoder_mask"].to(device)
+            decoder_mask = batch["decoder_mask"].to(device)
+            label = batch["label"].to(device)
+
+            encoder_output = model.encode(encoder_input, encoder_mask)
+            decoder_output = model.decode(
+                encoder_output, encoder_mask, decoder_input, decoder_mask
+            )
+            proj_output = model.project(decoder_output)
+
+            val_loss = loss_fn(
+                proj_output.view(-1, tokenizer_tgt.get_vocab_size()), label.view(-1)
+            )
+            total_val_loss += val_loss.item()
+            val_batches += 1
+
+    avg_val_loss = total_val_loss / val_batches if val_batches > 0 else 0
+    return avg_val_loss
 
 
 def get_all_sentences(ds, lang):
@@ -234,9 +256,7 @@ def train_model(config):
     model = get_model(
         config, tokenizer_src.get_vocab_size(), tokenizer_tgt.get_vocab_size()
     ).to(device)
-
-    # Tensorboard (probably depricate in favor of W&B)
-    # writer = SummaryWriter(config['experiment_name'])
+    print(f"Loaded model with {sum(p.numel() for p in model.parameters())} Parameters")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=config["lr"], eps=1e-9)
 
@@ -281,11 +301,12 @@ def train_model(config):
             loss = loss_fn(
                 proj_output.view(-1, tokenizer_tgt.get_vocab_size()), label.view(-1)
             )
-            batch_iterator.set_postfix({f"loss": f"{loss.item():6.3f}"})
+            # Log training loss
+            wandb.log(
+                {"train_loss": loss.item(), "epoch": epoch, "global_step": global_step}
+            )
 
-            # Log the loss:
-            # writer.add_scalar('train loss', loss.item(), global_step)
-            # writer.flush()
+            batch_iterator.set_postfix({f"loss": f"{loss.item():6.3f}"})
 
             # Backprop:
             loss.backward()
@@ -296,21 +317,35 @@ def train_model(config):
 
             global_step += 1
 
-        # TODO: Should run less frequently
-        # run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device,
-        #                    lambda msg: batch_iterator.write(msg), global_step)
+        # Run every Epoch:
+        val_loss = run_validation(
+            model,
+            val_dataloader,
+            tokenizer_src,
+            tokenizer_tgt,
+            config["seq_len"],
+            device,
+            lambda msg: batch_iterator.write(msg),
+            global_step,
+            loss_fn,
+        )
+
+        # Log validation loss
+        wandb.log({"val_loss": val_loss, "epoch": epoch, "global_step": global_step})
 
         # Save model after every epoch (TODO: make this a free param)
-        model_filename = get_weights_file_path(config, f"{epoch:02d}")
-        torch.save(
-            {
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "global_step": global_step,
-            },
-            model_filename,
-        )
+        if epoch % config.save_every_n_epochs == 0:
+            print(f"Saving snapshot epoch: {epoch}")
+            model_filename = get_weights_file_path(config, f"{epoch:02d}")
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "global_step": global_step,
+                },
+                model_filename,
+            )
 
 
 if __name__ == "__main__":
