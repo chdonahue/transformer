@@ -11,7 +11,7 @@ CONDA_ACTIVATE=source $$(conda info --base)/etc/profile.d/conda.sh ; conda activ
 
 CONDA_ENV=transformer_env
 
-all: conda-env-update pip-compile pip-sync set-pre-commit
+all: conda-env-update setup-pre-commit
 
 # Create or update conda env
 conda-env-update:
@@ -22,10 +22,21 @@ conda-env-update:
 setup-pre-commit:
 	$(CONDA_ACTIVATE) $(CONDA_ENV)
 	pip install pre-commit
+	@if [ ! -f .pre-commit-config.yaml ]; then \
+		echo "Creating .pre-commit-config.yaml"; \
+		echo "repos:" > .pre-commit-config.yaml; \
+		echo "-   repo: https://github.com/psf/black" >> .pre-commit-config.yaml; \
+		echo "    rev: 23.3.0" >> .pre-commit-config.yaml; \
+		echo "    hooks:" >> .pre-commit-config.yaml; \
+		echo "    -   id: black" >> .pre-commit-config.yaml; \
+		echo "        language_version: python3" >> .pre-commit-config.yaml; \
+	else \
+		echo ".pre-commit-config.yaml already exists"; \
+	fi
 	pre-commit install
 
 
-	
+
 # # Compile exact pip packages
 # pip-compile:
 # 	$(CONDA_ACTIVATE) $(CONDA_ENV)
