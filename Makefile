@@ -30,6 +30,7 @@ setup-pre-commit:
 		echo "    hooks:" >> .pre-commit-config.yaml; \
 		echo "    -   id: black" >> .pre-commit-config.yaml; \
 		echo "        language_version: python3" >> .pre-commit-config.yaml; \
+		echo "        args: [--line-length=110]" >> .pre-commit-config.yaml; \
 	else \
 		echo ".pre-commit-config.yaml already exists"; \
 	fi

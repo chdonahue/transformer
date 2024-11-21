@@ -1,0 +1,23 @@
+model:
+  vocab_size: 50257
+  context_length: 256
+  emb_dim: 768
+  n_heads: 12
+  n_layers: 12
+  drop_rate: 0.1
+  qkv_bias: False
+  # add random seed
+
+train:
+  model_folder: "weights"
+  num_epochs: 10
+  eval_freq: 5
+  eval_iter: 5
+
+
+wandb:
+  project_name: "transformer_from_scratch"
+  run_name: "gpt"
+  tags: 
+    - "debug"
+    - "local" 

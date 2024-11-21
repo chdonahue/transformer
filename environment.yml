@@ -9,6 +9,7 @@ dependencies:
     - torch
     - datasets
     - numpy<2.0.0
+    - tiktoken
     - python-dotenv
     - wandb
     - omegaconf
