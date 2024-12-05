@@ -54,8 +54,28 @@ def create_dataloader_v1(
     return dataloader
 
 
+class CrossAttention(nn.Module):
+    def __init__(self):
+        super().__init__()
+        print("Warning: Cross attention is not yet implemented!")
+
+    def forward(self, x, encoder_output):
+        return x
+
+
 class MultiHeadAttention(nn.Module):
-    def __init__(self, d_in, d_out, context_length, dropout, num_heads, qkv_bias=False):
+    # TODO: Add causal and padding mask functionality
+    def __init__(
+        self,
+        d_in,
+        d_out,
+        context_length,
+        dropout,
+        num_heads,
+        qkv_bias=False,
+        causal_mask=False,
+        padding_mask=False,
+    ):
         super().__init__()
         assert d_out % num_heads == 0, "d_out must be divisible by num_heads"
 
@@ -70,12 +90,14 @@ class MultiHeadAttention(nn.Module):
         self.W_value = nn.Linear(d_in, d_out, bias=qkv_bias)
         self.out_proj = nn.Linear(d_out, d_out)  # Linear layer to combine head outputs
         self.dropout = nn.Dropout(dropout)
+        self.causal_mask = causal_mask
+        self.padding_mask = padding_mask
         self.register_buffer(
             "mask", torch.triu(torch.ones(context_length, context_length), diagonal=1)
         )
 
     def forward(self, x):
-        b, num_tokens, d_in = x.shape
+        b, num_tokens, d_in = x.shape  # Batch, tokens, d_in
 
         keys = self.W_key(x)  # Shape: (b, num_tokens, d_out)
         queries = self.W_query(x)
@@ -95,11 +117,12 @@ class MultiHeadAttention(nn.Module):
         # Compute scaled dot-product attention (aka self-attention) with a causal mask
         attn_scores = queries @ keys.transpose(2, 3)  # Dot product for each head
 
-        # Original mask truncated to the number of tokens and converted to boolean
-        mask_bool = self.mask.bool()[:num_tokens, :num_tokens]
+        if self.causal_mask:
+            # Original mask truncated to the number of tokens and converted to boolean
+            mask_bool = self.mask.bool()[:num_tokens, :num_tokens]
 
-        # Use the mask to fill attention scores
-        attn_scores.masked_fill_(mask_bool, -torch.inf)
+            # Use the mask to fill attention scores
+            attn_scores.masked_fill_(mask_bool, -torch.inf)
 
         attn_weights = torch.softmax(attn_scores / keys.shape[-1] ** 0.5, dim=-1)
         attn_weights = self.dropout(attn_weights)
@@ -162,6 +185,7 @@ class FeedForward(nn.Module):
 class TransformerBlock(nn.Module):
     def __init__(self, cfg):
         super().__init__()
+        # TODO: Can simplify this by passing only cfg:
         self.att = MultiHeadAttention(
             d_in=cfg["emb_dim"],
             d_out=cfg["emb_dim"],
@@ -193,6 +217,14 @@ class TransformerBlock(nn.Module):
         return x
 
 
+class Identity(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        return x
+
+
 class GPTModel(nn.Module):
     def __init__(self, cfg):
         super().__init__()
@@ -216,4 +248,132 @@ class GPTModel(nn.Module):
         x = self.trf_blocks(x)
         x = self.final_norm(x)
         logits = self.out_head(x)
+        return logits
+
+
+class EncoderBlock(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        # TODO: Can simplify this by passing only cfg:
+        self.att = MultiHeadAttention(
+            d_in=cfg["emb_dim"],
+            d_out=cfg["emb_dim"],
+            context_length=cfg["context_length"],
+            num_heads=cfg["n_heads"],
+            dropout=cfg["drop_rate"],
+            qkv_bias=cfg["qkv_bias"],
+            causal_mask=False,
+        )
+        self.ff = FeedForward(cfg)
+        self.norm1 = LayerNorm(cfg["emb_dim"])
+        self.norm2 = LayerNorm(cfg["emb_dim"])
+        self.drop_shortcut = nn.Dropout(cfg["drop_rate"])
+
+    def forward(self, x):
+        # Shortcut connection for attention block
+        shortcut = x
+        x = self.norm1(x)
+        x = self.att(x)  # Shape [batch_size, num_tokens, emb_size]
+        x = self.drop_shortcut(x)
+        x = x + shortcut  # Add the original input back
+
+        # Shortcut connection for feed forward block
+        shortcut = x
+        x = self.norm2(x)
+        x = self.ff(x)
+        x = self.drop_shortcut(x)
+        x = x + shortcut  # Add the original input back
+
+        return x
+
+
+class DecoderBlock(nn.Module):
+    """
+    Decoder block for transformer. Will need masked multi-head attention!
+    """
+
+    def __init__(self, cfg):
+        super().__init__()
+        self.ff = FeedForward(cfg)
+        self.norm1 = LayerNorm(cfg["emb_dim"])
+        self.norm2 = LayerNorm(cfg["emb_dim"])
+        self.norm3 = LayerNorm(cfg["emb_dim"])
+        self.att = MultiHeadAttention(
+            d_in=cfg["emb_dim"],
+            d_out=cfg["emb_dim"],
+            context_length=cfg["context_length"],
+            num_heads=cfg["n_heads"],
+            dropout=cfg["drop_rate"],
+            qkv_bias=cfg["qkv_bias"],
+            causal_mask=True,
+        )
+        self.cross_attention = CrossAttention()  # TODO: INSERT THIS LATER!
+        self.drop_shortcut = nn.Dropout(cfg["drop_rate"])
+
+    def forward(self, encoder_output, output_embedding):
+        # First shortcut:
+        shortcut = output_embedding
+        x = self.norm1(output_embedding)
+        x = self.att(x)
+        x = self.drop_shortcut(x)
+        x = x + shortcut
+
+        # Second shortcut:
+        shortcut = x  # first stage output
+        x = self.norm2(x)
+        x = self.cross_attention(x, encoder_output)
+        x = self.drop_shortcut(x)
+        x = x + shortcut
+
+        # Third shortcut:
+        shortcut = x  # 2nd stage output
+        x = self.norm3(x)
+        x = self.ff(x)
+        x = self.drop_shortcut(x)
+        x = x + shortcut
+        return x
+
+
+class Transformer(nn.Module):
+    """
+    Encoder and Decoder for Transformer model (based on original paper, but with pre-LayerNorm):
+    """
+
+    def __init__(self, cfg):
+        super().__init__()
+
+        # Input and Output Embeddings:
+        self.input_tok_emb = nn.Embedding(cfg["input_vocab_size"], cfg["emb_dim"])
+        self.pos_emb = nn.Embedding(cfg["context_length"], cfg["emb_dim"])
+        self.output_tok_emb = nn.Embedding(cfg["output_vocab_size"], cfg["emb_dim"])
+        self.drop_emb = nn.Dropout(cfg["drop_rate"])
+        self.encoder_blocks = nn.Sequential(
+            *[EncoderBlock(cfg) for _ in range(cfg["num_layers"])]
+        )
+        self.decoder_blocks = nn.ModuleList(
+            [DecoderBlock(cfg) for _ in range(cfg["num_layers"])]
+        )  # to deal with 2 args
+        self.out_head = nn.Linear(cfg["emb_dim"], cfg["output_vocab_size"], bias=False)
+
+    def forward(self, inputs, outputs):
+        batch_size, input_seq_len = inputs.shape  # removing batch dim
+        # Pass through Encoder:
+        input_tok_emb = self.input_tok_emb(inputs)
+        input_pos_emb = self.pos_emb(torch.arange(input_seq_len, device=inputs.device))
+        x = input_tok_emb + input_pos_emb
+        x = self.drop_emb(x)
+        x = self.encoder_blocks(x)
+
+        # Pass through Decoder:
+        _, output_seq_len = outputs.shape  # removing batch dim
+        output_tok_emb = self.output_tok_emb(outputs)
+        output_pos_emb = self.pos_emb(
+            torch.arange(output_seq_len, device=outputs.device)
+        )
+        y = output_tok_emb + output_pos_emb
+        y = self.drop_emb(y)
+        # forward pass through decoder blocks:
+        for block in self.decoder_blocks:
+            y = block(encoder_output=x, output_embedding=y)
+        logits = self.out_head(y)
         return logits
