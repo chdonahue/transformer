@@ -16,5 +16,6 @@ dependencies:
     - tokenizers
     - pre-commit
     - black
+    - ipykernel
 
 

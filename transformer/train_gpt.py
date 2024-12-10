@@ -7,7 +7,7 @@ import warnings
 from omegaconf import OmegaConf
 from dotenv import load_dotenv
 from tqdm import tqdm
-from gpt_model import GPTModel, create_dataloader_v1
+from models.gpt_model import GPTModel, create_dataloader_v1
 from pathlib import Path
 
 
@@ -119,6 +119,7 @@ def evaluate_model(model, train_loader, val_loader, device, eval_iter):
 
 def train_model(config):
     # TODO: MPS on mac is somehow failing and not sure why. Find out.
+
     if torch.cuda.is_available():
         device = torch.device("cuda")
     else:
@@ -126,8 +127,9 @@ def train_model(config):
 
     print(f"Using device {device}")
     Path(config.train.model_folder).mkdir(parents=True, exist_ok=True)
+
     # This is just used for testing at the moment
-    # Replace with translation task later:
+    # TODO: Replace with translation task later:
     tokenizer = tiktoken.get_encoding("gpt2")
     with open("the-verdict.txt", "r", encoding="utf-8") as file:
         text_data = file.read()
@@ -140,6 +142,7 @@ def train_model(config):
 
     torch.manual_seed(123)
 
+    # TODO: Use the dataloaders for translation
     train_loader = create_dataloader_v1(
         train_data,
         batch_size=2,

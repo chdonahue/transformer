@@ -3,13 +3,13 @@ import os
 import wandb
 from torch.utils.data import Dataset, DataLoader, random_split
 from datasets import load_dataset
-from dataset import BilingualDataset, causal_mask
-from model import build_transformer
+from transformer.dataset import BilingualDataset, causal_mask
+from transformer.models.model import build_transformer
 from dotenv import load_dotenv
 from omegaconf import OmegaConf
 
 
-from config import get_weights_file_path, get_config
+from transformer.config import get_weights_file_path, get_config
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.trainers import WordLevelTrainer

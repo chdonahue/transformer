@@ -5,6 +5,62 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
 
+class TranslationDataset(Dataset):
+    """
+    This creates a dataset for translation tasks where we have paired inputs and outputs
+    It will include padding
+    """
+
+    def __init__(self, source_texts, target_texts, tokenizer, max_length, pad_token_id):
+        self.input_ids = []
+        self.target_ids = []
+        self.pad_token_id = pad_token_id
+
+        for src_txt, tgt_txt in zip(source_texts, target_texts):
+            # Tokenize both source and target
+            src_tokens = tokenizer.encode(src_txt)
+            tgt_tokens = tokenizer.encode(tgt_txt)
+
+            # Truncate if longer than max_length
+            src_tokens = src_tokens[:max_length]
+            tgt_tokens = tgt_tokens[:max_length]
+
+            # Pad if shorter than max_length
+            src_tokens = self._pad_sequence(src_tokens, max_length)
+            tgt_tokens = self._pad_sequence(tgt_tokens, max_length)
+
+            self.input_ids.append(torch.tensor(src_tokens))
+            self.target_ids.append(torch.tensor(tgt_tokens))
+
+    def _pad_sequence(self, seq, max_len):
+        if len(seq) < max_len:
+            return seq + [self.pad_token_id] * (max_len - len(seq))
+        return seq
+
+    def __len__(self):
+        return len(self.input_ids)
+
+    def __getitem__(self, idx):
+        return self.input_ids[idx], self.target_ids[idx]
+
+
+def create_translation_dataloader(source_texts, target_texts, tokenizer, cfg):
+    """
+    Returns dataloader for translation task
+    """
+    dataset = TranslationDataset(
+        source_texts,
+        target_texts,
+        tokenizer,
+        max_length=cfg["context_length"],
+        pad_token_id=cfg["pad_token_id"],
+    )
+
+    return DataLoader(
+        dataset, batch_size=cfg["batch_size"], shuffle=True, drop_last=True
+    )
+
+
 class GPTDatasetV1(Dataset):
     def __init__(self, txt, tokenizer, max_length, stride):
         self.input_ids = []
@@ -74,7 +130,6 @@ class MultiHeadAttention(nn.Module):
         num_heads,
         qkv_bias=False,
         causal_mask=False,
-        padding_mask=False,
     ):
         super().__init__()
         assert d_out % num_heads == 0, "d_out must be divisible by num_heads"
@@ -91,12 +146,11 @@ class MultiHeadAttention(nn.Module):
         self.out_proj = nn.Linear(d_out, d_out)  # Linear layer to combine head outputs
         self.dropout = nn.Dropout(dropout)
         self.causal_mask = causal_mask
-        self.padding_mask = padding_mask
         self.register_buffer(
             "mask", torch.triu(torch.ones(context_length, context_length), diagonal=1)
         )
 
-    def forward(self, x):
+    def forward(self, x, key_padding_mask=None):
         b, num_tokens, d_in = x.shape  # Batch, tokens, d_in
 
         keys = self.W_key(x)  # Shape: (b, num_tokens, d_out)
@@ -123,6 +177,11 @@ class MultiHeadAttention(nn.Module):
 
             # Use the mask to fill attention scores
             attn_scores.masked_fill_(mask_bool, -torch.inf)
+        if key_padding_mask is not None:
+            # key_padding_mask shape: (batch, seq_len)
+            # Reshape to (Batch, 1, 1, seq_len)
+            padding_mask = key_padding_mask.unsqueeze(1).unsqueeze(2)
+            attn_scores.masked_fill_(padding_mask, -torch.inf)
 
         attn_weights = torch.softmax(attn_scores / keys.shape[-1] ** 0.5, dim=-1)
         attn_weights = self.dropout(attn_weights)
@@ -269,11 +328,11 @@ class EncoderBlock(nn.Module):
         self.norm2 = LayerNorm(cfg["emb_dim"])
         self.drop_shortcut = nn.Dropout(cfg["drop_rate"])
 
-    def forward(self, x):
+    def forward(self, x, padding_mask=None):
         # Shortcut connection for attention block
         shortcut = x
         x = self.norm1(x)
-        x = self.att(x)  # Shape [batch_size, num_tokens, emb_size]
+        x = self.att(x, padding_mask)  # Shape [batch_size, num_tokens, emb_size]
         x = self.drop_shortcut(x)
         x = x + shortcut  # Add the original input back
 
@@ -310,18 +369,24 @@ class DecoderBlock(nn.Module):
         self.cross_attention = CrossAttention()  # TODO: INSERT THIS LATER!
         self.drop_shortcut = nn.Dropout(cfg["drop_rate"])
 
-    def forward(self, encoder_output, output_embedding):
+    def forward(
+        self,
+        encoder_output,
+        output_embedding,
+        encoder_padding_mask=None,
+        decoder_padding_mask=None,
+    ):
         # First shortcut:
         shortcut = output_embedding
         x = self.norm1(output_embedding)
-        x = self.att(x)
+        x = self.att(x, decoder_padding_mask)
         x = self.drop_shortcut(x)
         x = x + shortcut
 
         # Second shortcut:
         shortcut = x  # first stage output
         x = self.norm2(x)
-        x = self.cross_attention(x, encoder_output)
+        x = self.cross_attention(x, encoder_output, encoder_padding_mask)
         x = self.drop_shortcut(x)
         x = x + shortcut
 
@@ -347,22 +412,38 @@ class Transformer(nn.Module):
         self.pos_emb = nn.Embedding(cfg["context_length"], cfg["emb_dim"])
         self.output_tok_emb = nn.Embedding(cfg["output_vocab_size"], cfg["emb_dim"])
         self.drop_emb = nn.Dropout(cfg["drop_rate"])
-        self.encoder_blocks = nn.Sequential(
-            *[EncoderBlock(cfg) for _ in range(cfg["num_layers"])]
+        self.encoder_blocks = nn.ModuleList(
+            [EncoderBlock(cfg) for _ in range(cfg["num_layers"])]
         )
         self.decoder_blocks = nn.ModuleList(
             [DecoderBlock(cfg) for _ in range(cfg["num_layers"])]
         )  # to deal with 2 args
         self.out_head = nn.Linear(cfg["emb_dim"], cfg["output_vocab_size"], bias=False)
+        self.pad_token_id = cfg["pad_token_id"]
+
+    def _make_padding_mask(self, input):
+        """Create padding mask from input tensor"""
+        # Assuming padding token is 0, create mask where 1 indicates padding
+        return (input == self.pad_token_id).to(input.device)
 
     def forward(self, inputs, outputs):
         batch_size, input_seq_len = inputs.shape  # removing batch dim
+
+        # Create padding masks:
+        encoder_padding_mask = self._make_padding_mask(
+            inputs
+        )  # (batch_size, input_seq_len)
+        decoder_padding_mask = self._make_padding_mask(
+            outputs
+        )  # (batch_size, output_seq_len)
+
         # Pass through Encoder:
         input_tok_emb = self.input_tok_emb(inputs)
         input_pos_emb = self.pos_emb(torch.arange(input_seq_len, device=inputs.device))
         x = input_tok_emb + input_pos_emb
         x = self.drop_emb(x)
-        x = self.encoder_blocks(x)
+        for block in self.encoder_blocks:
+            x = block(x, encoder_padding_mask)
 
         # Pass through Decoder:
         _, output_seq_len = outputs.shape  # removing batch dim
@@ -374,6 +455,11 @@ class Transformer(nn.Module):
         y = self.drop_emb(y)
         # forward pass through decoder blocks:
         for block in self.decoder_blocks:
-            y = block(encoder_output=x, output_embedding=y)
+            y = block(
+                encoder_output=x,
+                output_embedding=y,
+                encoder_padding_mask=encoder_padding_mask,
+                decoder_padding_mask=decoder_padding_mask,
+            )
         logits = self.out_head(y)
         return logits

@@ -11,11 +11,24 @@ CONDA_ACTIVATE=source $$(conda info --base)/etc/profile.d/conda.sh ; conda activ
 
 CONDA_ENV=transformer_env
 
-all: conda-env-update setup-pre-commit
+all: conda-env-update setup-pre-commit install-dev setup-jupyter
 
 # Create or update conda env
 conda-env-update:
 	conda env update --prune
+
+# Install package in development mode
+.PHONY: install-dev
+install-dev:
+	$(CONDA_ACTIVATE) $(CONDA_ENV)
+	echo "Installing package from directory: $$(pwd)"
+	pip install -e .
+
+# Setup jupyter kernel
+.PHONY: setup-jupyter
+setup-jupyter:
+	$(CONDA_ACTIVATE) $(CONDA_ENV)
+	python -m ipykernel install --user --name $(CONDA_ENV) --display-name "Python ($(CONDA_ENV))"
 
 # Install and setup pre-commit hooks
 .PHONY: setup-pre-commit
